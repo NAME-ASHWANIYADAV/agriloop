@@ -1,47 +1,21 @@
-Act as a Senior Python Backend Architect. I need to **REFACTOR** the "Option 4: Waste to Wealth" flow in my FastAPI/WhatsApp bot to make it business-oriented and user-friendly.
+Act as a Senior DevOps & Git Expert. I am working on a Windows machine (PowerShell).
 
-**Current Issue:** The bot searches for buyers immediately.
-**New Requirement:** The bot must calculate estimates FIRST, ask for confirmation, and ONLY THEN perform the web search.
+**The Situation:**
+I have a FastAPI project (`agriloop_backend`). I accidentally committed and pushed `.env` and `venv` folders to GitHub. I have tried to revert, but the repository state is messy.
 
-**Required Interaction Flow (State Machine):**
+**The Goal:**
+I need a single **PowerShell script** that I can copy and run to fix everything automatically.
 
-1.  **State: WASTE_ASK_CROP** (User inputs Crop Name)
-    * Action: Ask for Quantity.
-    * Update State: `WASTE_ASK_QTY`
-
-2.  **State: WASTE_ASK_QTY** (User inputs Quantity, e.g., "5 ton")
-    * **Logic (No Search Yet):**
-        * Identify Quantity (default to 1 if parsing fails).
-        * **Calculate Price:** `Qty * Base_Rate` (Assume Paddy=₹1800/ton, Wheat=₹1500/ton).
-        * **Calculate Carbon:** `Qty * 1.5` (Approx 1.5 tons CO2 saved per ton of stubble).
-    * **Bot Response (in User's Language):**
-        > 📊 **Anumanit Report (Estimate):**
-        > 💰 **Potential Income:** ₹[Amount]
-        > 🌍 **Carbon Saved:** [Carbon] tons (You are a Climate Hero! 🦸‍♂️)
-        >
-        > **Kya aap isse bechna chahte hain? (Reply 'Yes' or 'Haan')**
-    * Update State: `WASTE_CONFIRM_DEAL`
-
-3.  **State: WASTE_CONFIRM_DEAL** (User replies 'Yes/Haan')
-    * **Logic:**
-        * Trigger **Background Task**: `perform_web_search`.
-        * **Search Strategy:** Search for buyers in user's specific location. If NONE found, search in the nearest District/City.
-    * **Bot Response:** "🔎 Searching for nearest buyers & arranging pickup... Please wait."
-
-**Technical Implementation Instructions:**
-
-**1. Update `app/services/whatsapp_service.py`:**
-* Refactor the `handle_message` logic to implement the 3 steps above.
-* **Language Enforcement:** Ensure `system_prompt` sent to Claude explicitly instructs it to reply in the language stored in `farmer.language` (Hindi/English/Hinglish).
-* **Search Fallback:** In the background search task, if the specific location yields 0 results, modify the query to search for the "Nearest Industrial Hub" or "District".
-
-**2. Update `app/services/ai_service.py` (Claude Prompt):**
-* Update the prompt to strictly output in the requested language.
-* Update the prompt to analyze search results: "If exact location matches are missing, find the closest available options from the search snippet."
-
-**3. Formulas to use in Code:**
-* `price = quantity * 1800`
-* `carbon_saved = quantity * 1.46` (Standard factor)
+**The Script Must Do the Following Steps:**
+1.  **Reset Staging:** Unstage all current changes (`git reset`).
+2.  **Create/Fix .gitignore:** Overwrite the `.gitignore` file to strictly ignore:
+    * `venv/` and `*/venv/`
+    * `.env` and `*/.env`
+    * `__pycache__/`
+3.  **Clear Cache:** Force remove `.env` and `venv` from the Git Index (Cache) so they are no longer tracked, but **keep them on my local disk**.
+4.  **Re-Add Files:** Run `git add .` (which should now respect the new .gitignore).
+5.  **Commit:** Create a commit message "Fix: Cleaned up repo and removed sensitive files".
+6.  **Push:** Force push to origin main to clean the remote history.
 
 **Output:**
-Provide the complete, updated code for `app/services/whatsapp_service.py` ONLY. (Assume other files are fine, just fix the flow logic here).
+Provide ONLY the PowerShell code block. Do not explain the steps, just give me the code to run.
