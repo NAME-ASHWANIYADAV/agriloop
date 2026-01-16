@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+anthropic
+deep-translator
+httpx
+twilio
+python-dotenv
+beanie
+motor
+Pillow
+python-multipart
+ddgs
+ddgs
