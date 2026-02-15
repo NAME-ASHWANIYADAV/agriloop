@@ -43,24 +43,59 @@ class AIService:
         )
         return response.content[0].text.strip()
 
-    async def get_farming_advice(self, farmer: Farmer, query: str) -> str:
+    async def get_farming_advice(self, farmer: Farmer, query: str, enriched_context: dict = None) -> str:
         context = f"""
         Farmer Profile:
         - Name: {farmer.name or 'N/A'}
         - Location: {self.weather_service.get_location_string(farmer) or 'N/A'}
         - Farm Size: {farmer.farm_size_acres or 'N/A'} acres
-        - Crops: {', '.join(farmer.crops) or 'N/A'}
+        - Crops: {', '.join(farmer.crops) if farmer.crops else 'N/A'}
         - Language: {farmer.language_preference}
         """
-        
+
+        # Add enriched context from AgriTech Pro
+        if enriched_context:
+            if "fields" in enriched_context and enriched_context["fields"]:
+                context += "\n        AgriTech Pro Fields:\n"
+                for f in enriched_context["fields"]:
+                    health = f.get("healthScore")
+                    ndvi = f.get("ndvi")
+                    context += f"        - {f['name']}: Crop={f.get('cropType', 'Unknown')}"
+                    if f.get("areaHectares"):
+                        context += f", Area={f['areaHectares']}ha"
+                    if health is not None:
+                        context += f", Health={health}/100"
+                    if ndvi is not None:
+                        context += f", NDVI={ndvi:.3f}"
+                    context += "\n"
+
+            if "weather" in enriched_context:
+                weather = enriched_context["weather"]
+                context += "\n        Current Weather:\n"
+                if isinstance(weather, dict):
+                    if "current" in weather:
+                        context += f"        - Current: {weather['current']}\n"
+                    if "forecast" in weather:
+                        context += f"        - Forecast: {weather['forecast']}\n"
+                else:
+                    context += f"        - {weather}\n"
+
+            if "agricultural_weather" in enriched_context:
+                ag = enriched_context["agricultural_weather"]
+                if isinstance(ag, dict):
+                    context += "\n        Agricultural Metrics:\n"
+                    for key, val in ag.items():
+                        if key not in ("success",) and val is not None:
+                            context += f"        - {key}: {val}\n"
+
         prompt = f"""
-        You are an expert agricultural assistant for Indian farmers. Your advice should prioritize:
-        1.  **Low-cost and accessible solutions.**
-        2.  **Organic and sustainable farming practices.**
-        3.  **Waste-to-value concepts (e.g., composting, reusing farm byproducts).**
-        
-        Given the following context about a farmer, provide a clear, actionable answer to their query.
-        Keep the answer concise and easy to understand for a farmer.
+        You are an expert agricultural assistant for Indian farmers. Your advice should be:
+        1.  **Specific to this farmer's actual fields and conditions** — reference their field names, health scores, and NDVI values when relevant.
+        2.  **Weather-aware** — factor in current and forecasted weather when advising on irrigation, spraying, harvesting, etc.
+        3.  **Low-cost and accessible** — prioritize affordable, practical solutions.
+        4.  **Actionable** — give clear steps the farmer can take right now.
+
+        If the farmer's fields show low health scores (below 60) or low NDVI (below 0.4), proactively mention this and suggest corrective actions even if not directly asked.
 
         **Farmer & Environmental Context:**
         {context}

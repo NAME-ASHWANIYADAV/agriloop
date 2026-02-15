@@ -179,6 +179,7 @@ class WhatsAppHandler:
             await self.handle_crop_prediction_start(farmer, background_tasks)
 
         elif message_body == "6":
+            # Basic bot profile
             profile_info = f"""*Your AgriTech Pro AI Profile*
 👤 *Name:* {farmer.name or 'Not Set'}
 📞 *Phone:* {farmer.phone_number}
@@ -187,6 +188,62 @@ class WhatsAppHandler:
 🌾 *Crops:* {', '.join(farmer.crops) if farmer.crops else 'Not Set'}
 🏞️ *Farm Size:* {f'{farmer.farm_size_acres} acres' if farmer.farm_size_acres else 'Not Set'}
 """
+
+            # Fetch AgriTech Pro linked account info
+            try:
+                phone = farmer.phone_number.replace('whatsapp:', '')
+                user_info = await self.agritech_service.lookup_user_by_phone(phone)
+
+                if user_info:
+                    first_name = user_info.get("firstName", "")
+                    last_name = user_info.get("lastName", "")
+                    email = user_info.get("email", "N/A")
+                    org_name = user_info.get("organizationName", "N/A")
+                    user_id = user_info.get("id")
+
+                    profile_info += f"""
+🔗 *AgriTech Pro Account:* ✅ Linked
+📧 *Email:* {email}
+🏢 *Organization:* {org_name}
+👤 *Account Name:* {first_name} {last_name}
+"""
+
+                    # Fetch fields summary
+                    if user_id:
+                        fields = await self.agritech_service.get_user_fields(user_id)
+                        if fields:
+                            profile_info += f"\n📊 *Your Fields ({len(fields)}):*\n"
+                            for i, f in enumerate(fields, 1):
+                                name = f.get("name", "Unnamed")
+                                crop = f.get("cropType", "—")
+                                area = f.get("areaHectares")
+                                health = f.get("healthScore")
+                                ndvi = f.get("ndvi")
+
+                                field_line = f"{i}. *{name}*"
+                                if crop and crop != "—":
+                                    field_line += f" | 🌱 {crop}"
+                                if area:
+                                    field_line += f" | 📏 {area}ha"
+                                if health is not None:
+                                    if health >= 80:
+                                        emoji = "✅"
+                                    elif health >= 60:
+                                        emoji = "🟢"
+                                    elif health >= 40:
+                                        emoji = "🟡"
+                                    else:
+                                        emoji = "🔴"
+                                    field_line += f" | {emoji} {health}/100"
+                                profile_info += field_line + "\n"
+                        else:
+                            profile_info += "\n📋 No fields added yet. Add fields in the AgriTech Pro dashboard.\n"
+                else:
+                    profile_info += "\n🔗 *AgriTech Pro Account:* ❌ Not linked\n_Register at agritechpro.vercel.app with the same phone number to unlock field health reports and crop predictions._\n"
+            except Exception as e:
+                print(f"Profile enrichment error: {e}")
+                profile_info += "\n⚠️ Could not fetch AgriTech Pro data at this time.\n"
+
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(profile_info, farmer))
 
         elif message_body == "7":
@@ -523,8 +580,46 @@ class WhatsAppHandler:
 
 
     async def run_ai_farming_advice(self, farmer: Farmer, query: str):
-        """Runs AI advice generation and sends the result."""
-        ai_response = await self.ai_service.get_farming_advice(farmer, query)
+        """Runs AI advice generation with enriched context from AgriTech Pro and sends the result."""
+        # Gather enriched context from AgriTech Pro
+        enriched_context = {}
+
+        try:
+            # 1. Look up farmer's AgriTech Pro account and fields
+            phone = farmer.phone_number.replace('whatsapp:', '')
+            user_info = await self.agritech_service.lookup_user_by_phone(phone)
+
+            if user_info:
+                user_id = user_info.get("id")
+                fields = await self.agritech_service.get_user_fields(user_id)
+                if fields:
+                    enriched_context["fields"] = []
+                    for f in fields:
+                        field_info = {
+                            "name": f.get("name", "Unnamed"),
+                            "cropType": f.get("cropType", "Unknown"),
+                            "areaHectares": f.get("areaHectares"),
+                            "healthScore": f.get("healthScore"),
+                            "ndvi": f.get("ndvi"),
+                        }
+                        enriched_context["fields"].append(field_info)
+
+            # 2. Fetch current weather if location is available
+            if farmer.location and "lat" in farmer.location and "lon" in farmer.location:
+                lat, lon = farmer.location["lat"], farmer.location["lon"]
+                weather_data = await self.weather_service.get_weather(lat, lon)
+                if weather_data:
+                    enriched_context["weather"] = weather_data
+
+                # 3. Fetch agricultural weather (soil moisture, etc.)
+                ag_weather = await self.agritech_service.get_agricultural_weather(lat, lon)
+                if ag_weather:
+                    enriched_context["agricultural_weather"] = ag_weather
+
+        except Exception as e:
+            print(f"Context enrichment error (non-fatal): {e}")
+
+        ai_response = await self.ai_service.get_farming_advice(farmer, query, enriched_context)
         translated_response = await self.translate(ai_response, farmer)
         await self.send_whatsapp_message(farmer.phone_number, translated_response)
 
