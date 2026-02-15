@@ -20,15 +20,14 @@ INDIAN_LANGUAGES = {
     "kashmiri": "ks", "sanskrit": "sa", "sindhi": "sd", "urdu": "ur",
 }
 
-MAIN_MENU_TEXT = """🌿 *AgriLoop AI Menu*
-1️⃣ Weather Info
-2️⃣ Ask Expert (Chat)
-3️⃣ Pest Check (Image)
-4️⃣ Waste to Wealth
-5️⃣ Profile
-6️⃣ Change Language
-7️⃣ 🛰️ Field Health Report
-8️⃣ 🌾 Crop Prediction
+MAIN_MENU_TEXT = """🌿 *AgriTech Pro AI Menu*
+1️⃣ 🌤️ Weather Info
+2️⃣ 💬 Ask Expert (Chat)
+3️⃣ 🐛 Pest Check (Image)
+4️⃣ 🛰️ Field Health Report
+5️⃣ 🌾 Crop Prediction
+6️⃣ 👤 Profile
+7️⃣ 🌐 Change Language
 _Reply 0 to reset._"""
 
 class WhatsAppHandler:
@@ -81,7 +80,7 @@ class WhatsAppHandler:
             farmer.onboarding_state = "awaiting_language"
             await farmer.save()
             lang_options = ", ".join([f"{lang.capitalize()}" for lang in INDIAN_LANGUAGES.keys()])
-            return f"Welcome to AgriLoop AI! Please choose your preferred language (e.g., English, Hindi).\n\nSupported: {lang_options}"
+            return f"Welcome to AgriTech Pro AI! Please choose your preferred language (e.g., English, Hindi).\n\nSupported: {lang_options}"
 
         elif farmer.onboarding_state == "awaiting_language":
             chosen_language_name = message_body.lower()
@@ -126,9 +125,9 @@ class WhatsAppHandler:
             FarmerState.AWAITING_LANGUAGE_CHANGE: self.handle_awaiting_language_change,
             FarmerState.AWAITING_LOCATION: self.handle_awaiting_location,
             FarmerState.CONFIRM_LOCATION: self.handle_confirm_location,
-            FarmerState.AWAITING_WASTE_CROP: self.handle_awaiting_waste_crop,
-            FarmerState.AWAITING_WASTE_QUANTITY: self.handle_awaiting_waste_quantity,
-            FarmerState.WASTE_CONFIRM_DEAL: self.handle_waste_confirm_deal,
+            # FarmerState.AWAITING_WASTE_CROP: self.handle_awaiting_waste_crop,  # Waste to Wealth — not relevant to AgriTech Pro
+            # FarmerState.AWAITING_WASTE_QUANTITY: self.handle_awaiting_waste_quantity,
+            # FarmerState.WASTE_CONFIRM_DEAL: self.handle_waste_confirm_deal,
             FarmerState.AWAITING_FIELD_SELECTION: self.handle_awaiting_field_selection,
             FarmerState.AWAITING_CROP_PREDICTION_LOCATION: self.handle_awaiting_crop_prediction_location,
         }
@@ -168,13 +167,19 @@ class WhatsAppHandler:
             await farmer.save()
             await self.send_whatsapp_message(farmer.phone_number, await self.translate("Please upload a photo of the affected plant.", farmer))
 
-        elif message_body == "4": # Waste to Wealth
-            farmer.current_state = FarmerState.AWAITING_WASTE_CROP
-            await farmer.save()
-            await self.send_whatsapp_message(farmer.phone_number, await self.translate("Which crop residue do you have? (e.g., Rice Stubble, Wheat Straw)", farmer))
+        # elif message_body == "X": # Waste to Wealth (commented out — not relevant to AgriTech Pro)
+        #     farmer.current_state = FarmerState.AWAITING_WASTE_CROP
+        #     await farmer.save()
+        #     await self.send_whatsapp_message(farmer.phone_number, await self.translate("Which crop residue do you have? (e.g., Rice Stubble, Wheat Straw)", farmer))
 
-        elif message_body == "5":
-            profile_info = f"""*Your AgriLoop AI Profile*
+        elif message_body == "4":  # Field Health Report
+            await self.handle_field_health_start(farmer, background_tasks)
+
+        elif message_body == "5":  # Crop Prediction
+            await self.handle_crop_prediction_start(farmer, background_tasks)
+
+        elif message_body == "6":
+            profile_info = f"""*Your AgriTech Pro AI Profile*
 👤 *Name:* {farmer.name or 'Not Set'}
 📞 *Phone:* {farmer.phone_number}
 🌐 *Language:* {farmer.language_preference.upper()}
@@ -184,17 +189,11 @@ class WhatsAppHandler:
 """
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(profile_info, farmer))
 
-        elif message_body == "6":
+        elif message_body == "7":
             farmer.current_state = FarmerState.AWAITING_LANGUAGE_CHANGE
             await farmer.save()
             lang_options = ", ".join([f"{lang.capitalize()}" for lang in INDIAN_LANGUAGES.keys()])
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(f"Please choose your new language.\n\nSupported: {lang_options}", farmer))
-
-        elif message_body == "7":  # Field Health Report
-            await self.handle_field_health_start(farmer, background_tasks)
-
-        elif message_body == "8":  # Crop Prediction
-            await self.handle_crop_prediction_start(farmer, background_tasks)
 
         else: # Invalid option
             menu_text = await self.translate(MAIN_MENU_TEXT, farmer)
@@ -521,9 +520,6 @@ class WhatsAppHandler:
         weather_response = await self.ai_service.get_weather_summary(farmer)
         translated_response = await self.translate(weather_response, farmer)
         await self.send_whatsapp_message(farmer.phone_number, translated_response)
-        weather_response = await self.ai_service.get_weather_summary(farmer)
-        translated_response = await self.translate(weather_response, farmer)
-        await self.send_whatsapp_message(farmer.phone_number, translated_response)
 
 
     async def run_ai_farming_advice(self, farmer: Farmer, query: str):
@@ -632,7 +628,7 @@ class WhatsAppHandler:
 0.2-0.4 = Sparse/stressed
 < 0.2 = Bare soil
 
-_Run again anytime from the menu (Option 7)._"""
+_Run again anytime from the menu (Option 4)._"""
             else:
                 report = (
                     f"⚠️ *Field Health Report for {field_name}*\n\n"
@@ -675,7 +671,7 @@ _Run again anytime from the menu (Option 7)._"""
                         prob = pred.get("probability") or pred.get("confidence")
                         report += f"\n{i}. {crop_name}: {f'{prob:.1%}' if prob else 'N/A'}"
 
-                report += "\n\n_Run again anytime from the menu (Option 8)._"
+                report += "\n\n_Run again anytime from the menu (Option 5)._"
             else:
                 report = (
                     f"⚠️ *Crop Prediction for {location_name}*\n\n"

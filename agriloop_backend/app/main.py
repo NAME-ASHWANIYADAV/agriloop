@@ -22,7 +22,7 @@ async def keep_alive_loop():
     # Self-ping (Render sets RENDER_EXTERNAL_URL automatically)
     self_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("SELF_URL")
     if self_url:
-        targets.append(("Self (AgriLoop)", self_url))
+        targets.append(("Self (AgriTech Pro)", self_url))
 
     # AgriTech Pro backend
     agritech_url = settings.AGRITECH_API_URL
@@ -64,14 +64,14 @@ async def lifespan(app: FastAPI):
     keep_alive_task.cancel()
 
 
-app = FastAPI(title="AgriLoop AI", lifespan=lifespan)
+app = FastAPI(title="AgriTech Pro AI", lifespan=lifespan)
 
 app.include_router(whatsapp.router, prefix="/api")
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to AgriLoop AI"}
+    return {"message": "Welcome to AgriTech Pro AI"}
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "AgriLoop AI"}
+    return {"status": "ok", "service": "AgriTech Pro AI"}
