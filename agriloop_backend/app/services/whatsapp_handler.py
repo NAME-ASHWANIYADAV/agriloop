@@ -1,5 +1,5 @@
 from twilio.rest import Client
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import BackgroundTasks
 import asyncio
 
@@ -11,6 +11,7 @@ from app.services.ai_service import AIService
 from app.services.weather_service import WeatherService
 from app.services.translation_service import TranslationService
 from app.services.web_search_service import WebSearchService, get_web_search_service
+from app.services.agritech_service import AgriTechService
 
 INDIAN_LANGUAGES = {
     "english": "en", "hindi": "hi", "bengali": "bn", "telugu": "te",
@@ -26,6 +27,8 @@ MAIN_MENU_TEXT = """🌿 *AgriLoop AI Menu*
 4️⃣ Waste to Wealth
 5️⃣ Profile
 6️⃣ Change Language
+7️⃣ 🛰️ Field Health Report
+8️⃣ 🌾 Crop Prediction
 _Reply 0 to reset._"""
 
 class WhatsAppHandler:
@@ -34,12 +37,14 @@ class WhatsAppHandler:
         ai_service: AIService,
         weather_service: WeatherService,
         translation_service: TranslationService,
-        web_search_service: WebSearchService
+        web_search_service: WebSearchService,
+        agritech_service: AgriTechService = None
     ):
         self.ai_service = ai_service
         self.weather_service = weather_service
         self.translation_service = translation_service
         self.web_search_service = web_search_service
+        self.agritech_service = agritech_service or AgriTechService()
         self.twilio_client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN) if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN else None
 
     async def handle_message(self, payload: dict, background_tasks: BackgroundTasks):
@@ -124,6 +129,8 @@ class WhatsAppHandler:
             FarmerState.AWAITING_WASTE_CROP: self.handle_awaiting_waste_crop,
             FarmerState.AWAITING_WASTE_QUANTITY: self.handle_awaiting_waste_quantity,
             FarmerState.WASTE_CONFIRM_DEAL: self.handle_waste_confirm_deal,
+            FarmerState.AWAITING_FIELD_SELECTION: self.handle_awaiting_field_selection,
+            FarmerState.AWAITING_CROP_PREDICTION_LOCATION: self.handle_awaiting_crop_prediction_location,
         }
 
         handler = state_handlers.get(farmer.current_state)
@@ -182,6 +189,12 @@ class WhatsAppHandler:
             await farmer.save()
             lang_options = ", ".join([f"{lang.capitalize()}" for lang in INDIAN_LANGUAGES.keys()])
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(f"Please choose your new language.\n\nSupported: {lang_options}", farmer))
+
+        elif message_body == "7":  # Field Health Report
+            await self.handle_field_health_start(farmer, background_tasks)
+
+        elif message_body == "8":  # Crop Prediction
+            await self.handle_crop_prediction_start(farmer, background_tasks)
 
         else: # Invalid option
             menu_text = await self.translate(MAIN_MENU_TEXT, farmer)
@@ -336,6 +349,171 @@ class WhatsAppHandler:
         else:
             await self.send_whatsapp_message(farmer.phone_number, await self.translate("Invalid response. Please reply 'Yes' or 'Haan' to confirm, or 'No'/'Nahi' to cancel.", farmer))
 
+    # --- AgriTech Pro Integration Handlers ---
+
+    async def handle_field_health_start(self, farmer: Farmer, background_tasks: BackgroundTasks):
+        """Start the Field Health Report flow. Links farmer to AgriTech account and lists fields."""
+        # Look up the farmer's AgriTech account by phone
+        phone = farmer.phone_number.replace('whatsapp:', '')
+        user_info = await self.agritech_service.lookup_user_by_phone(phone)
+
+        if not user_info:
+            msg = (
+                "⚠️ Your phone number is not linked to an AgriTech Pro account.\n\n"
+                "Please register at *agritechpro.vercel.app* with the same phone number "
+                "to access field health reports."
+            )
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(msg, farmer))
+            return
+
+        # Fetch the user's fields
+        user_id = user_info.get("id")
+        fields = await self.agritech_service.get_user_fields(user_id)
+
+        if not fields:
+            msg = (
+                "📋 No fields found in your AgriTech Pro account.\n\n"
+                "Please add a field in the AgriTech Pro dashboard first."
+            )
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(msg, farmer))
+            return
+
+        # Present field list for selection
+        field_list_text = "🛰️ *Select a field for health analysis:*\n\n"
+        for i, field in enumerate(fields, 1):
+            name = field.get('name', 'Unnamed')
+            health = field.get('healthScore')
+            health_str = f" (Health: {health}/100)" if health else ""
+            field_list_text += f"{i}️⃣ {name}{health_str}\n"
+        field_list_text += "\n_Reply with the number of the field._"
+
+        # Store fields in temp_data for selection
+        farmer.temp_data = {
+            "agritech_user_id": user_id,
+            "fields": fields,
+            "action": "field_health"
+        }
+        farmer.current_state = FarmerState.AWAITING_FIELD_SELECTION
+        await farmer.save()
+
+        await self.send_whatsapp_message(farmer.phone_number, await self.translate(field_list_text, farmer))
+
+    async def handle_crop_prediction_start(self, farmer: Farmer, background_tasks: BackgroundTasks):
+        """Start the Crop Prediction flow. Links farmer and lists fields or uses location."""
+        phone = farmer.phone_number.replace('whatsapp:', '')
+        user_info = await self.agritech_service.lookup_user_by_phone(phone)
+
+        if user_info:
+            user_id = user_info.get("id")
+            fields = await self.agritech_service.get_user_fields(user_id)
+
+            if fields:
+                field_list_text = "🌾 *Select a field for crop prediction:*\n\n"
+                for i, field in enumerate(fields, 1):
+                    name = field.get('name', 'Unnamed')
+                    field_list_text += f"{i}️⃣ {name}\n"
+                field_list_text += "\n_Reply with the number, or share your location for a new area._"
+
+                farmer.temp_data = {
+                    "agritech_user_id": user_id,
+                    "fields": fields,
+                    "action": "crop_prediction"
+                }
+                farmer.current_state = FarmerState.AWAITING_FIELD_SELECTION
+                await farmer.save()
+
+                await self.send_whatsapp_message(farmer.phone_number, await self.translate(field_list_text, farmer))
+                return
+
+        # No AgriTech account or no fields — use location
+        if farmer.location and "lat" in farmer.location:
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                "🌾 Running crop prediction for your current location... Please wait.", farmer
+            ))
+            background_tasks.add_task(
+                self.run_crop_prediction, farmer,
+                farmer.location["lat"], farmer.location["lon"],
+                farmer.location.get("city", "Your location")
+            )
+        else:
+            farmer.current_state = FarmerState.AWAITING_CROP_PREDICTION_LOCATION
+            await farmer.save()
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                "Please share your location to run crop prediction.", farmer
+            ))
+
+    async def handle_awaiting_field_selection(self, farmer: Farmer, message_body: str, media_url: Optional[str], latitude: Optional[str], longitude: Optional[str], background_tasks: BackgroundTasks):
+        """Handler for AWAITING_FIELD_SELECTION state. User picks a field by number."""
+        if not farmer.temp_data or "fields" not in farmer.temp_data:
+            farmer.current_state = FarmerState.MAIN_MENU
+            await farmer.save()
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                "Something went wrong. Returning to main menu.", farmer
+            ))
+            return
+
+        fields = farmer.temp_data["fields"]
+        action = farmer.temp_data.get("action", "field_health")
+
+        try:
+            selection = int(message_body.strip())
+            if selection < 1 or selection > len(fields):
+                raise ValueError("Out of range")
+        except (ValueError, TypeError):
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                f"Please reply with a number between 1 and {len(fields)}.", farmer
+            ))
+            return
+
+        selected_field = fields[selection - 1]
+        lat = selected_field.get("latitude")
+        lon = selected_field.get("longitude")
+        field_name = selected_field.get("name", "Field")
+
+        if not lat or not lon:
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                "⚠️ This field has no GPS coordinates. Please update it in the dashboard.", farmer
+            ))
+            farmer.current_state = FarmerState.MAIN_MENU
+            farmer.temp_data = None
+            await farmer.save()
+            return
+
+        # Reset state
+        farmer.current_state = FarmerState.MAIN_MENU
+        farmer.temp_data = None
+        await farmer.save()
+
+        if action == "crop_prediction":
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                f"🌾 Running crop prediction for *{field_name}*... Please wait.", farmer
+            ))
+            background_tasks.add_task(self.run_crop_prediction, farmer, lat, lon, field_name)
+        else:  # field_health
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                f"🛰️ Analyzing health of *{field_name}*... This may take up to a minute.", farmer
+            ))
+            background_tasks.add_task(self.run_field_health_analysis, farmer, lat, lon, field_name)
+
+    async def handle_awaiting_crop_prediction_location(self, farmer: Farmer, message_body: str, media_url: Optional[str], latitude: Optional[str], longitude: Optional[str], background_tasks: BackgroundTasks):
+        """Handler for AWAITING_CROP_PREDICTION_LOCATION state. Expects a location."""
+        if latitude and longitude:
+            lat = float(latitude)
+            lon = float(longitude)
+            city_name = await self.weather_service.get_city_name_from_coords(lat, lon)
+
+            farmer.current_state = FarmerState.MAIN_MENU
+            await farmer.save()
+
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                f"🌾 Running crop prediction for {city_name}... Please wait.", farmer
+            ))
+            background_tasks.add_task(self.run_crop_prediction, farmer, lat, lon, city_name)
+        else:
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                "Please share your location using the attach button.", farmer
+            ))
+
     # --- Background Task Functions ---
 
     async def run_weather_report(self, farmer: Farmer):
@@ -416,6 +594,105 @@ class WhatsAppHandler:
         )
         
         await self.send_whatsapp_message(farmer.phone_number, ai_report)
+
+    async def run_field_health_analysis(self, farmer: Farmer, lat: float, lon: float, field_name: str):
+        """Runs satellite field health analysis via AgriTech Pro and sends the result."""
+        try:
+            result = await self.agritech_service.analyze_field_health(lat, lon, field_name)
+
+            if result and result.get("success") is not False:
+                # Extract key metrics from the result
+                ndvi = result.get("ndvi") or result.get("mean_ndvi") or result.get("vegetation_index")
+                health_score = result.get("health_score") or result.get("healthScore")
+                vegetation_fraction = result.get("vegetation_fraction")
+                analysis_date = result.get("analysis_date") or result.get("date")
+
+                # Determine health status emoji
+                if health_score and health_score >= 80:
+                    status = "✅ Excellent"
+                elif health_score and health_score >= 60:
+                    status = "🟢 Good"
+                elif health_score and health_score >= 40:
+                    status = "🟡 Moderate"
+                elif health_score:
+                    status = "🔴 Poor"
+                else:
+                    status = "❓ Unknown"
+
+                report = f"""🛰️ *Field Health Report: {field_name}*
+
+📊 *Health Score:* {f'{health_score}/100 ({status})' if health_score else 'N/A'}
+🌿 *NDVI:* {f'{ndvi:.3f}' if ndvi else 'N/A'}
+🌱 *Vegetation Cover:* {f'{vegetation_fraction:.1%}' if vegetation_fraction else 'N/A'}
+📅 *Analysis Date:* {analysis_date or 'Recent'}
+
+*NDVI Guide:*
+> 0.6 = Dense healthy vegetation
+0.4-0.6 = Moderate vegetation
+0.2-0.4 = Sparse/stressed
+< 0.2 = Bare soil
+
+_Run again anytime from the menu (Option 7)._"""
+            else:
+                report = (
+                    f"⚠️ *Field Health Report for {field_name}*\n\n"
+                    "Could not retrieve satellite data at this time. "
+                    "This may be due to cloud cover or satellite availability.\n\n"
+                    "_Please try again later or check the AgriTech Pro dashboard._"
+                )
+
+            translated = await self.translate(report, farmer)
+            await self.send_whatsapp_message(farmer.phone_number, translated)
+
+        except Exception as e:
+            print(f"Field health analysis error: {e}")
+            error_msg = (
+                f"⚠️ Sorry, I couldn't analyze *{field_name}* right now. "
+                "The satellite service may be temporarily unavailable.\n\n"
+                "_Please try again later._"
+            )
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(error_msg, farmer))
+
+    async def run_crop_prediction(self, farmer: Farmer, lat: float, lon: float, location_name: str):
+        """Runs crop prediction via AgriTech Pro and sends the result."""
+        try:
+            result = await self.agritech_service.predict_crop(lat, lon)
+
+            if result and result.get("success") is not False:
+                predicted_crop = result.get("predicted_crop") or result.get("crop") or result.get("prediction")
+                confidence = result.get("confidence") or result.get("probability")
+                top_predictions = result.get("top_predictions") or result.get("predictions")
+
+                report = f"""🌾 *Crop Prediction: {location_name}*
+
+🎯 *Predicted Crop:* {predicted_crop or 'Unknown'}
+📈 *Confidence:* {f'{confidence:.1%}' if confidence else 'N/A'}"""
+
+                if top_predictions and isinstance(top_predictions, list):
+                    report += "\n\n📊 *Top Predictions:*"
+                    for i, pred in enumerate(top_predictions[:5], 1):
+                        crop_name = pred.get("crop") or pred.get("name") or pred.get("class")
+                        prob = pred.get("probability") or pred.get("confidence")
+                        report += f"\n{i}. {crop_name}: {f'{prob:.1%}' if prob else 'N/A'}"
+
+                report += "\n\n_Run again anytime from the menu (Option 8)._"
+            else:
+                report = (
+                    f"⚠️ *Crop Prediction for {location_name}*\n\n"
+                    "Could not generate crop prediction at this time.\n\n"
+                    "_Please try again later or check the AgriTech Pro dashboard._"
+                )
+
+            translated = await self.translate(report, farmer)
+            await self.send_whatsapp_message(farmer.phone_number, translated)
+
+        except Exception as e:
+            print(f"Crop prediction error: {e}")
+            error_msg = (
+                f"⚠️ Sorry, I couldn't predict crops for *{location_name}* right now.\n\n"
+                "_Please try again later._"
+            )
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(error_msg, farmer))
 
     # --- Utility Functions ---
 

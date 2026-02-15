@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     TWILIO_PHONE_NUMBER: str
     MONGODB_URL: str
     MONGODB_DB_NAME: str = "agriloop"
+    AGRITECH_API_URL: str = "http://localhost:3000"
+    AGRITECH_INTERNAL_API_KEY: str = "dev-internal-api-key"
 
     class Config:
         env_file = ".env"
