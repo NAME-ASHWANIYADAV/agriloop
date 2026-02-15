@@ -144,38 +144,48 @@ class WhatsAppHandler:
     async def handle_main_menu(self, farmer: Farmer, message_body: str, media_url: Optional[str], latitude: Optional[str], longitude: Optional[str], background_tasks: BackgroundTasks):
         """Handler for the MAIN_MENU state."""
         if message_body == "1":
+            # Check AgriTech Pro fields first for field-specific weather
+            try:
+                phone = farmer.phone_number.replace('whatsapp:', '')
+                user_info = await self.agritech_service.lookup_user_by_phone(phone)
+                if user_info:
+                    fields = await self.agritech_service.get_user_fields(user_info.get("id"))
+                    if fields:
+                        field_list_text = "🌤️ *Select a field for weather report:*\n\n"
+                        for i, field in enumerate(fields, 1):
+                            name = field.get('name', 'Unnamed')
+                            crop = field.get('cropType', '')
+                            crop_str = f" ({crop})" if crop else ""
+                            field_list_text += f"{i}️⃣ {name}{crop_str}\n"
+
+                        # Add option for saved location if available
+                        if farmer.location and "city" in farmer.location:
+                            field_list_text += f"\n0️⃣ Use saved location: {farmer.location['city']}"
+
+                        field_list_text += "\n\n_Reply with the number of the field._"
+
+                        farmer.temp_data = {
+                            "agritech_user_id": user_info.get("id"),
+                            "fields": fields,
+                            "action": "weather"
+                        }
+                        farmer.current_state = FarmerState.AWAITING_FIELD_SELECTION
+                        await farmer.save()
+
+                        await self.send_whatsapp_message(farmer.phone_number, await self.translate(field_list_text, farmer))
+                        return
+            except Exception as e:
+                print(f"Weather field lookup error: {e}")
+
+            # Fallback: no AgriTech Pro fields — use saved location or ask
             if farmer.location and "city" in farmer.location:
                 farmer.current_state = FarmerState.CONFIRM_LOCATION
                 await farmer.save()
-                
                 location_str = farmer.location['city']
                 prompt = f"Your saved location is {location_str}. Is this correct? (Yes/No)"
                 translated_prompt = await self.translate(prompt, farmer)
                 await self.send_whatsapp_message(farmer.phone_number, translated_prompt)
             else:
-                # Try to auto-populate location from AgriTech Pro fields
-                try:
-                    phone = farmer.phone_number.replace('whatsapp:', '')
-                    user_info = await self.agritech_service.lookup_user_by_phone(phone)
-                    if user_info:
-                        fields = await self.agritech_service.get_user_fields(user_info.get("id"))
-                        if fields:
-                            # Use the first field's coordinates
-                            first_field = fields[0]
-                            lat = first_field.get("latitude")
-                            lon = first_field.get("longitude")
-                            field_name = first_field.get("name", "Your field")
-                            if lat and lon:
-                                farmer.location = {"lat": lat, "lon": lon, "city": field_name}
-                                await farmer.save()
-                                await self.send_whatsapp_message(farmer.phone_number, await self.translate(
-                                    f"📍 Using location from your field *{field_name}*. Fetching weather...", farmer
-                                ))
-                                background_tasks.add_task(self.run_weather_report, farmer)
-                                return
-                except Exception as e:
-                    print(f"Weather auto-location error: {e}")
-
                 farmer.current_state = FarmerState.AWAITING_LOCATION
                 await farmer.save()
                 await self.send_whatsapp_message(farmer.phone_number, await self.translate("Please share your location to get weather information.", farmer))
@@ -536,12 +546,30 @@ class WhatsAppHandler:
 
         try:
             selection = int(message_body.strip())
-            if selection < 1 or selection > len(fields):
+            # Allow 0 for weather (use saved location)
+            min_sel = 0 if action == "weather" else 1
+            if selection < min_sel or selection > len(fields):
                 raise ValueError("Out of range")
         except (ValueError, TypeError):
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(
                 f"Please reply with a number between 1 and {len(fields)}.", farmer
             ))
+            return
+
+        # Handle "0" = use saved location (weather only)
+        if selection == 0 and action == "weather":
+            farmer.current_state = FarmerState.MAIN_MENU
+            farmer.temp_data = None
+            await farmer.save()
+            if farmer.location and "lat" in farmer.location:
+                await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                    f"🌤️ Fetching weather for *{farmer.location.get('city', 'your location')}*... Please wait.", farmer
+                ))
+                background_tasks.add_task(self.run_weather_report, farmer)
+            else:
+                await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                    "⚠️ No saved location found. Please share your location.", farmer
+                ))
             return
 
         selected_field = fields[selection - 1]
@@ -568,6 +596,14 @@ class WhatsAppHandler:
                 f"🌾 Running crop prediction for *{field_name}*... Please wait.", farmer
             ))
             background_tasks.add_task(self.run_crop_prediction, farmer, lat, lon, field_name)
+        elif action == "weather":
+            # Set farmer location from selected field and run weather
+            farmer.location = {"lat": lat, "lon": lon, "city": field_name}
+            await farmer.save()
+            await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                f"🌤️ Fetching weather for *{field_name}*... Please wait.", farmer
+            ))
+            background_tasks.add_task(self.run_weather_report, farmer)
         else:  # field_health
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(
                 f"🛰️ Analyzing health of *{field_name}*... This may take up to a minute.", farmer
@@ -713,19 +749,28 @@ class WhatsAppHandler:
         """Runs satellite field health analysis via AgriTech Pro and sends the result."""
         try:
             result = await self.agritech_service.analyze_field_health(lat, lon, field_name)
-            print(f"Field health raw result: {result}")  # Debug log
+            print(f"Field health raw result keys: {list(result.keys()) if result else 'None'}")  # Debug log
 
             if result and result.get("success") is not False and result.get("error") is None:
-                # Extract key metrics with defensive type conversion
-                raw_ndvi = result.get("ndvi") or result.get("mean_ndvi") or result.get("vegetation_index")
+                # Extract from actual ML response structure
+                # NDVI lives under result["indices"]["ndvi"], NOT result["ndvi"]
+                indices = result.get("indices", {})
+                raw_ndvi = indices.get("ndvi") if isinstance(indices, dict) else None
                 raw_health = result.get("health_score") or result.get("healthScore")
-                raw_veg = result.get("vegetation_fraction")
                 analysis_date = result.get("analysis_date") or result.get("date")
+                vegetation_status = result.get("vegetation_status", {})
+                stress_indicators = result.get("stress_indicators", [])
+                recommendations = result.get("recommendations", [])
+
+                # Also extract other indices if available
+                raw_ndwi = indices.get("ndwi") if isinstance(indices, dict) else None
+                raw_evi = indices.get("evi") if isinstance(indices, dict) else None
 
                 # Safe float conversion
                 ndvi = None
                 health_score = None
-                vegetation_fraction = None
+                ndwi = None
+                evi = None
                 try:
                     if raw_ndvi is not None: ndvi = float(raw_ndvi)
                 except (ValueError, TypeError): pass
@@ -733,7 +778,10 @@ class WhatsAppHandler:
                     if raw_health is not None: health_score = float(raw_health)
                 except (ValueError, TypeError): pass
                 try:
-                    if raw_veg is not None: vegetation_fraction = float(raw_veg)
+                    if raw_ndwi is not None: ndwi = float(raw_ndwi)
+                except (ValueError, TypeError): pass
+                try:
+                    if raw_evi is not None: evi = float(raw_evi)
                 except (ValueError, TypeError): pass
 
                 # Determine health status emoji
@@ -748,12 +796,37 @@ class WhatsAppHandler:
                 else:
                     status = "❓ Unknown"
 
+                # Vegetation status label
+                veg_label = vegetation_status.get("label", "") if isinstance(vegetation_status, dict) else ""
+
                 report = f"""🛰️ *Field Health Report: {field_name}*
 
 📊 *Health Score:* {f'{health_score:.0f}/100 ({status})' if health_score else 'N/A'}
 🌿 *NDVI:* {f'{ndvi:.3f}' if ndvi is not None else 'N/A'}
-🌱 *Vegetation Cover:* {f'{vegetation_fraction:.1%}' if vegetation_fraction is not None else 'N/A'}
-📅 *Analysis Date:* {analysis_date or 'Recent'}
+� *NDWI (Water):* {f'{ndwi:.3f}' if ndwi is not None else 'N/A'}
+🌱 *EVI (Vegetation):* {f'{evi:.3f}' if evi is not None else 'N/A'}
+🏷️ *Status:* {veg_label or 'N/A'}
+📅 *Analysis Date:* {analysis_date or 'Recent'}"""
+
+                # Add stress alerts if any
+                if stress_indicators:
+                    report += "\n\n⚠️ *Stress Alerts:*"
+                    for si in stress_indicators[:3]:
+                        if isinstance(si, dict):
+                            report += f"\n• {si.get('type', 'Unknown')}: {si.get('message', '')}"
+                        else:
+                            report += f"\n• {si}"
+
+                # Add top recommendations
+                if recommendations:
+                    report += "\n\n💡 *Recommendations:*"
+                    for rec in recommendations[:3]:
+                        if isinstance(rec, dict):
+                            report += f"\n• {rec.get('message', '') or rec.get('text', str(rec))}"
+                        else:
+                            report += f"\n• {rec}"
+
+                report += """
 
 *NDVI Guide:*
 > 0.6 = Dense healthy vegetation
@@ -785,43 +858,70 @@ _Run again anytime from the menu (Option 4)._"""
             )
             await self.send_whatsapp_message(farmer.phone_number, await self.translate(error_msg, farmer))
 
+    # Indian Pines crop class ID → name mapping (used by CNN-LSTM model)
+    CROP_CLASS_NAMES = {
+        1: 'Alfalfa', 2: 'Corn-notill', 3: 'Corn-mintill', 4: 'Corn',
+        5: 'Grass-pasture', 6: 'Grass-trees', 7: 'Grass-pasture-mowed',
+        8: 'Hay-windrowed', 9: 'Oats', 10: 'Soybean-notill',
+        11: 'Soybean-mintill', 12: 'Soybean-clean', 13: 'Wheat',
+        14: 'Woods', 15: 'Buildings-Grass-Trees-Drives', 16: 'Stone-Steel-Towers'
+    }
+
     async def run_crop_prediction(self, farmer: Farmer, lat: float, lon: float, location_name: str):
         """Runs crop prediction via AgriTech Pro and sends the result."""
         try:
             result = await self.agritech_service.predict_crop(lat, lon)
-            print(f"Crop prediction raw result: {result}")  # Debug log
+            print(f"Crop prediction raw result keys: {list(result.keys()) if result else 'None'}")
 
             if result and result.get("success") is not False and result.get("error") is None:
-                predicted_crop = result.get("predicted_crop") or result.get("crop") or result.get("prediction")
-                
-                # Defensive type conversion for confidence
-                raw_confidence = result.get("confidence") or result.get("probability")
-                confidence = None
-                if raw_confidence is not None:
-                    try:
-                        confidence = float(raw_confidence)
-                    except (ValueError, TypeError):
-                        confidence = None
-                
-                top_predictions = result.get("top_predictions") or result.get("predictions")
+                # Extract from actual ML response structure
+                # Prediction data is nested under result["prediction"]
+                prediction = result.get("prediction", {})
+                dominant_class_id = prediction.get("dominant_crop_class_id")
+                dominant_pct = prediction.get("dominant_percentage")
+                all_classes = prediction.get("all_classes", [])
+
+                # Vegetation indices are nested under result["vegetation_indices"]
+                veg_indices = result.get("vegetation_indices", {})
+                ndvi = veg_indices.get("ndvi")
+                health_score = veg_indices.get("health_score")
+
+                # Map class ID to crop name
+                predicted_crop = self.CROP_CLASS_NAMES.get(dominant_class_id, f"Class {dominant_class_id}") if dominant_class_id else "Unknown"
+
+                # Safe float conversions
+                try:
+                    dominant_pct = float(dominant_pct) if dominant_pct is not None else None
+                except (ValueError, TypeError):
+                    dominant_pct = None
+                try:
+                    ndvi = float(ndvi) if ndvi is not None else None
+                except (ValueError, TypeError):
+                    ndvi = None
+                try:
+                    health_score = float(health_score) if health_score is not None else None
+                except (ValueError, TypeError):
+                    health_score = None
 
                 report = f"""🌾 *Crop Prediction: {location_name}*
 
-🎯 *Predicted Crop:* {predicted_crop or 'Unknown'}
-📈 *Confidence:* {f'{confidence:.1%}' if confidence is not None else 'N/A'}"""
+🎯 *Predicted Crop:* {predicted_crop}
+📈 *Confidence:* {f'{dominant_pct:.1f}%' if dominant_pct is not None else 'N/A'}
+🌿 *NDVI:* {f'{ndvi:.3f}' if ndvi is not None else 'N/A'}
+📊 *Health Score:* {f'{health_score:.0f}/100' if health_score is not None else 'N/A'}"""
 
-                if top_predictions and isinstance(top_predictions, list):
-                    report += "\n\n📊 *Top Predictions:*"
-                    for i, pred in enumerate(top_predictions[:5], 1):
-                        crop_name = pred.get("crop") or pred.get("name") or pred.get("class")
-                        raw_prob = pred.get("probability") or pred.get("confidence")
-                        prob = None
-                        if raw_prob is not None:
-                            try:
-                                prob = float(raw_prob)
-                            except (ValueError, TypeError):
-                                prob = None
-                        report += f"\n{i}. {crop_name}: {f'{prob:.1%}' if prob is not None else 'N/A'}"
+                # Show top crop classes by pixel count
+                if all_classes and isinstance(all_classes, list):
+                    total_pixels = sum(c.get("pixel_count", 0) for c in all_classes)
+                    if total_pixels > 0:
+                        # Sort by pixel count descending
+                        sorted_classes = sorted(all_classes, key=lambda x: x.get("pixel_count", 0), reverse=True)
+                        report += "\n\n📊 *Top Classifications:*"
+                        for i, cls in enumerate(sorted_classes[:5], 1):
+                            cls_id = cls.get("crop_type_id")
+                            cls_name = self.CROP_CLASS_NAMES.get(cls_id, f"Class {cls_id}")
+                            pct = (cls.get("pixel_count", 0) / total_pixels) * 100
+                            report += f"\n{i}. {cls_name}: {pct:.1f}%"
 
                 report += "\n\n_Run again anytime from the menu (Option 5)._"
             else:

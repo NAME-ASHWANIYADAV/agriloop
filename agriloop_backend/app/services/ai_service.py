@@ -75,7 +75,10 @@ class AIService:
                     if health is not None:
                         context += f", Health={health}/100"
                     if ndvi is not None:
-                        context += f", NDVI={ndvi:.3f}"
+                        try:
+                            context += f", NDVI={float(ndvi):.3f}"
+                        except (ValueError, TypeError):
+                            context += f", NDVI={ndvi}"
                     context += "\n"
 
             if "weather" in enriched_context:
