@@ -713,13 +713,28 @@ class WhatsAppHandler:
         """Runs satellite field health analysis via AgriTech Pro and sends the result."""
         try:
             result = await self.agritech_service.analyze_field_health(lat, lon, field_name)
+            print(f"Field health raw result: {result}")  # Debug log
 
-            if result and result.get("success") is not False:
-                # Extract key metrics from the result
-                ndvi = result.get("ndvi") or result.get("mean_ndvi") or result.get("vegetation_index")
-                health_score = result.get("health_score") or result.get("healthScore")
-                vegetation_fraction = result.get("vegetation_fraction")
+            if result and result.get("success") is not False and result.get("error") is None:
+                # Extract key metrics with defensive type conversion
+                raw_ndvi = result.get("ndvi") or result.get("mean_ndvi") or result.get("vegetation_index")
+                raw_health = result.get("health_score") or result.get("healthScore")
+                raw_veg = result.get("vegetation_fraction")
                 analysis_date = result.get("analysis_date") or result.get("date")
+
+                # Safe float conversion
+                ndvi = None
+                health_score = None
+                vegetation_fraction = None
+                try:
+                    if raw_ndvi is not None: ndvi = float(raw_ndvi)
+                except (ValueError, TypeError): pass
+                try:
+                    if raw_health is not None: health_score = float(raw_health)
+                except (ValueError, TypeError): pass
+                try:
+                    if raw_veg is not None: vegetation_fraction = float(raw_veg)
+                except (ValueError, TypeError): pass
 
                 # Determine health status emoji
                 if health_score and health_score >= 80:
@@ -735,9 +750,9 @@ class WhatsAppHandler:
 
                 report = f"""🛰️ *Field Health Report: {field_name}*
 
-📊 *Health Score:* {f'{health_score}/100 ({status})' if health_score else 'N/A'}
-🌿 *NDVI:* {f'{ndvi:.3f}' if ndvi else 'N/A'}
-🌱 *Vegetation Cover:* {f'{vegetation_fraction:.1%}' if vegetation_fraction else 'N/A'}
+📊 *Health Score:* {f'{health_score:.0f}/100 ({status})' if health_score else 'N/A'}
+🌿 *NDVI:* {f'{ndvi:.3f}' if ndvi is not None else 'N/A'}
+🌱 *Vegetation Cover:* {f'{vegetation_fraction:.1%}' if vegetation_fraction is not None else 'N/A'}
 📅 *Analysis Date:* {analysis_date or 'Recent'}
 
 *NDVI Guide:*
@@ -774,26 +789,44 @@ _Run again anytime from the menu (Option 4)._"""
         """Runs crop prediction via AgriTech Pro and sends the result."""
         try:
             result = await self.agritech_service.predict_crop(lat, lon)
+            print(f"Crop prediction raw result: {result}")  # Debug log
 
-            if result and result.get("success") is not False:
+            if result and result.get("success") is not False and result.get("error") is None:
                 predicted_crop = result.get("predicted_crop") or result.get("crop") or result.get("prediction")
-                confidence = result.get("confidence") or result.get("probability")
+                
+                # Defensive type conversion for confidence
+                raw_confidence = result.get("confidence") or result.get("probability")
+                confidence = None
+                if raw_confidence is not None:
+                    try:
+                        confidence = float(raw_confidence)
+                    except (ValueError, TypeError):
+                        confidence = None
+                
                 top_predictions = result.get("top_predictions") or result.get("predictions")
 
                 report = f"""🌾 *Crop Prediction: {location_name}*
 
 🎯 *Predicted Crop:* {predicted_crop or 'Unknown'}
-📈 *Confidence:* {f'{confidence:.1%}' if confidence else 'N/A'}"""
+📈 *Confidence:* {f'{confidence:.1%}' if confidence is not None else 'N/A'}"""
 
                 if top_predictions and isinstance(top_predictions, list):
                     report += "\n\n📊 *Top Predictions:*"
                     for i, pred in enumerate(top_predictions[:5], 1):
                         crop_name = pred.get("crop") or pred.get("name") or pred.get("class")
-                        prob = pred.get("probability") or pred.get("confidence")
-                        report += f"\n{i}. {crop_name}: {f'{prob:.1%}' if prob else 'N/A'}"
+                        raw_prob = pred.get("probability") or pred.get("confidence")
+                        prob = None
+                        if raw_prob is not None:
+                            try:
+                                prob = float(raw_prob)
+                            except (ValueError, TypeError):
+                                prob = None
+                        report += f"\n{i}. {crop_name}: {f'{prob:.1%}' if prob is not None else 'N/A'}"
 
                 report += "\n\n_Run again anytime from the menu (Option 5)._"
             else:
+                error_detail = result.get("error", "") if result else "No response from ML service"
+                print(f"Crop prediction failed - result: {result}, error: {error_detail}")
                 report = (
                     f"⚠️ *Crop Prediction for {location_name}*\n\n"
                     "The satellite ML service could not analyze this location.\n"
@@ -809,6 +842,8 @@ _Run again anytime from the menu (Option 4)._"""
 
         except Exception as e:
             print(f"Crop prediction error: {e}")
+            import traceback
+            traceback.print_exc()
             error_msg = (
                 f"⚠️ Sorry, I couldn't predict crops for *{location_name}* right now.\n\n"
                 "_Please try again later._"
