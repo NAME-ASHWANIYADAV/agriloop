@@ -71,3 +71,7 @@ app.include_router(whatsapp.router, prefix="/api")
 @app.get("/")
 def read_root():
     return {"message": "Welcome to AgriLoop AI"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "AgriLoop AI"}
