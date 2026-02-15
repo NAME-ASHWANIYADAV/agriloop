@@ -153,6 +153,29 @@ class WhatsAppHandler:
                 translated_prompt = await self.translate(prompt, farmer)
                 await self.send_whatsapp_message(farmer.phone_number, translated_prompt)
             else:
+                # Try to auto-populate location from AgriTech Pro fields
+                try:
+                    phone = farmer.phone_number.replace('whatsapp:', '')
+                    user_info = await self.agritech_service.lookup_user_by_phone(phone)
+                    if user_info:
+                        fields = await self.agritech_service.get_user_fields(user_info.get("id"))
+                        if fields:
+                            # Use the first field's coordinates
+                            first_field = fields[0]
+                            lat = first_field.get("latitude")
+                            lon = first_field.get("longitude")
+                            field_name = first_field.get("name", "Your field")
+                            if lat and lon:
+                                farmer.location = {"lat": lat, "lon": lon, "city": field_name}
+                                await farmer.save()
+                                await self.send_whatsapp_message(farmer.phone_number, await self.translate(
+                                    f"📍 Using location from your field *{field_name}*. Fetching weather...", farmer
+                                ))
+                                background_tasks.add_task(self.run_weather_report, farmer)
+                                return
+                except Exception as e:
+                    print(f"Weather auto-location error: {e}")
+
                 farmer.current_state = FarmerState.AWAITING_LOCATION
                 await farmer.save()
                 await self.send_whatsapp_message(farmer.phone_number, await self.translate("Please share your location to get weather information.", farmer))
@@ -727,9 +750,12 @@ _Run again anytime from the menu (Option 4)._"""
             else:
                 report = (
                     f"⚠️ *Field Health Report for {field_name}*\n\n"
-                    "Could not retrieve satellite data at this time. "
-                    "This may be due to cloud cover or satellite availability.\n\n"
-                    "_Please try again later or check the AgriTech Pro dashboard._"
+                    "Could not retrieve satellite data at this time.\n"
+                    "This may be due to:\n"
+                    "• Cloud cover over the area\n"
+                    "• Satellite service temporarily unavailable\n"
+                    "• Recent imagery not yet processed\n\n"
+                    "_Please try again in a few minutes._"
                 )
 
             translated = await self.translate(report, farmer)
@@ -770,8 +796,12 @@ _Run again anytime from the menu (Option 4)._"""
             else:
                 report = (
                     f"⚠️ *Crop Prediction for {location_name}*\n\n"
-                    "Could not generate crop prediction at this time.\n\n"
-                    "_Please try again later or check the AgriTech Pro dashboard._"
+                    "The satellite ML service could not analyze this location.\n"
+                    "This may be due to:\n"
+                    "• Cloud cover over the area\n"
+                    "• ML service temporarily unavailable\n"
+                    "• Satellite data not yet available for this region\n\n"
+                    "_Please try again in a few minutes._"
                 )
 
             translated = await self.translate(report, farmer)

@@ -28,10 +28,19 @@ class AIService:
         weather_data = await self.weather_service.get_weather(lat, lon)
         city_name = await self.weather_service.get_city_name(farmer)
 
+        # Build farmer context for crop-specific advice
+        farmer_context = ""
+        if farmer.crops:
+            farmer_context = f"\n        Farmer's crops: {', '.join(farmer.crops)}"
+        if farmer.farm_size_acres:
+            farmer_context += f"\n        Farm size: {farmer.farm_size_acres} acres"
+
         prompt = f"""
         You are an agricultural assistant. Based on the following weather data for {city_name}, 
         provide a simple, actionable summary for a farmer. Include today's weather and a brief 3-day forecast.
         Focus on what's important for farming (e.g., rain, temperature, wind).
+        Give specific advice tied to the farmer's crops if known (e.g., irrigation, spraying, harvesting timing).
+        {farmer_context}
 
         Current Weather: {weather_data['current']}
         Forecast: {weather_data['forecast']}
